@@ -26,6 +26,34 @@ impl Cell {
     }
 }
 /// A valid Puzzle representing the equation sum(args) == target,
+/// Solutions to Alphametics puzzles must give a one-to-one mapping
+/// from variable names to their values.  Environments represent this
+/// mapping as an array var_to_digit.  We assume that digit_mask[d] ==
+/// 1 ⬄ a unique element of var_to_digit equals Some(d).
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Environment {
+    var_to_digit: [Option<u8>; 26],
+    digit_mask: [bool; 10]
+}
+
+impl Environment {
+    // Advantage of this design: since self is moved, even if the
+    // substitution fails caller doesn't have access to the previous
+    // env.  Enforces the idea that envs are for Puzzle::play alone...
+
+    // Main problem is that I want the fn's in the Puzzle trait to
+    // take self by reference, otherwise the search routine would have to
+    // clone them which seems bad.  If Environments are consumed by value, then
+    // their container Puzzles have to be consumed by value as well.
+    // pub fn add(self, var: u8, digit: u8) -> Option<Self> { }
+    // pub fn get(&self, var: u8) -> Option<u8> { }
+
+    // Can enforce error handling with must_use I think.
+    // Inspired by HashMap::try_insert
+    // pub fn try_bind(&mut self, var: u8, digit: u8) -> Option<&mut u8> {}
+    // pub fn try_bind(&mut self, var: u8, digit: u8) -> Result<&mut u8, OccupiedError> {}
+    // pub fn get(&self, var: u8) -> Option<u8>
+}
 /// where each entry of args is a decimal number represented as a
 /// _little-endian_ vector of digits, and likewise with target.
 #[derive(Clone)]
