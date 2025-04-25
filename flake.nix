@@ -1,5 +1,5 @@
 {
-  description = "Minimal devshell for the exercism.io/";
+  description = "Minimal devshell for the exercism.io rust track";
 
   inputs = {
     nixpkgs.url      = "github:NixOS/nixpkgs/nixos-unstable";
@@ -20,8 +20,9 @@
           stdenv = pkgs.stdenvAdapters.useMoldLinker pkgs.clangStdenv;
         } {
           packages = with pkgs; [
-            rust-bin.beta.latest.default
+            rust-bin.nightly.latest.default
             rust-analyzer
+            cargo-expand
             exercism
             nixd
           ];
