@@ -1,130 +1,373 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    fmt::{self, Write},
+};
 
 // We assume that the vectors that make up a valid Puzzle have the
 // same length.
-
-#[derive(Copy, Clone, PartialEq, Eq)]
-enum Cell {
-    /// Varaible(v) :: a variable with the name v.  Where 0 <= v < 26.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum Square {
     Variable(u8),
     /// Digit(d) :: a fixed digit d.
     Digit(u8),
 }
 
-impl Cell {
+impl Square {
+    fn get_var(&self) -> Option<u8> {
+        match self {
+            Square::Variable(v) => Some(*v),
+            _ => None,
+        }
+    }
+    fn get_digit(&self) -> Option<u8> {
+        match self {
+            Square::Digit(d) => Some(*d),
+            _ => None,
+        }
+    }
     fn is_var(&self) -> bool {
         match self {
-            Cell::Variable(_) => true,
+            Square::Variable(_) => true,
             _ => false,
         }
     }
     fn is_digit(&self) -> bool {
         match self {
-            Cell::Digit(_) => true,
+            Square::Digit(_) => true,
             _ => false,
         }
     }
 }
-/// A valid Puzzle representing the equation sum(args) == target,
+
+impl fmt::Display for Square {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Square::Variable(v) => f.write_char(char::from(b'A' + v)),
+            Square::Digit(d) => write!(f, "{d}"),
+        }
+    }
+}
+
 /// Solutions to Alphametics puzzles must give a one-to-one mapping
 /// from variable names to their values.  Environments represent this
-/// mapping as an array var_to_digit.  We assume that digit_mask[d] ==
-/// 1 ⬄ a unique element of var_to_digit equals Some(d).
+/// mapping as an array var_to_digit.  We assume that (digit_mask[d] ==
+/// true) ⬄ a unique element of var_to_digit equals Some(d).
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Environment {
     var_to_digit: [Option<u8>; 26],
-    digit_mask: [bool; 10]
+    digit_mask: [bool; 10],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BindError {
+    VariableBound,
+    DigitBound,
+    InvalidVariable,
+    InvalidDigit,
 }
 
 impl Environment {
-    // Advantage of this design: since self is moved, even if the
-    // substitution fails caller doesn't have access to the previous
-    // env.  Enforces the idea that envs are for Puzzle::play alone...
-
-    // Main problem is that I want the fn's in the Puzzle trait to
-    // take self by reference, otherwise the search routine would have to
-    // clone them which seems bad.  If Environments are consumed by value, then
-    // their container Puzzles have to be consumed by value as well.
-    // pub fn add(self, var: u8, digit: u8) -> Option<Self> { }
-    // pub fn get(&self, var: u8) -> Option<u8> { }
-
-    // Can enforce error handling with must_use I think.
-    // Inspired by HashMap::try_insert
-    // pub fn try_bind(&mut self, var: u8, digit: u8) -> Option<&mut u8> {}
-    // pub fn try_bind(&mut self, var: u8, digit: u8) -> Result<&mut u8, OccupiedError> {}
-    // pub fn get(&self, var: u8) -> Option<u8>
+    pub fn try_subst(&self, var: u8, digit: u8) -> Result<Self, BindError> {
+        if !(0..26).contains(&var) {
+            Err(BindError::InvalidVariable)
+        } else if self.var_to_digit[var as usize].is_some() {
+            Err(BindError::VariableBound)
+        } else if !(0..10).contains(&digit) {
+            Err(BindError::InvalidDigit)
+        } else if self.digit_mask[digit as usize] {
+            Err(BindError::DigitBound)
+        } else {
+            let mut var_to_digit = self.var_to_digit;
+            let mut digit_mask = self.digit_mask;
+            var_to_digit[var as usize] = Some(digit);
+            digit_mask[digit as usize] = true;
+            Ok(Environment {
+                var_to_digit,
+                digit_mask,
+            })
+        }
+    }
+    pub fn get(&self, var: u8) -> Option<u8> {
+        *self.var_to_digit.get(var as usize)?
+    }
 }
-/// where each entry of args is a decimal number represented as a
-/// _little-endian_ vector of digits, and likewise with target.
-#[derive(Clone)]
+
+impl<const N: usize> TryFrom<[(u8, u8); N]> for Environment {
+    type Error = BindError;
+    fn try_from(table: [(u8, u8); N]) -> Result<Self, Self::Error> {
+        table.into_iter().try_fold(
+            Environment {
+                var_to_digit: [None; 26],
+                digit_mask: [false; 10],
+            },
+            |acc, (k, v)| acc.try_subst(k, v),
+        )
+    }
+}
+
+impl fmt::Display for Environment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut table = self
+            .var_to_digit
+            .iter()
+            .enumerate()
+            .filter_map(|(var, &digit)| Some((var, digit?)));
+        if let Some((var, d)) = table.next() {
+            write!(f, "{} => {}", char::from(b'A' + (var as u8)), d)?
+        }
+        for (var, d) in table {
+            write!(f, ", {} => {}", char::from(b'A' + (var as u8)), d)?
+        }
+        Ok(())
+    }
+}
+
+impl From<&Environment> for HashMap<char, u8> {
+    fn from(e: &Environment) -> Self {
+        e.var_to_digit
+            .iter()
+            .enumerate()
+            .flat_map(|(v, &digit)| Some((char::from(b'A' + (v as u8)), digit?)))
+            .collect()
+    }
+}
+
+/// A Puzzle struct represets a partially completed solution to the
+/// equation sum(args + carry) == target, where addition is performed
+/// using the column addition method.
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct Puzzle {
-    args: Vec<Vec<Cell>>,
-    target: Vec<Cell>,
-    carry: Vec<bool>,
-    var_to_digit: [Option<u8>; 26],
-    /// We assume that 0 <= col <= len where len is the common length
-    /// of the elements of args.
+    /// `args` represents a 2D array of [squares](Sell).
+    args: Box<[Box<[Square]>]>,
+    /// `target` is represented as a _little-endian_ base 10 numeral
+    /// of [squares](Square).
+    target: Box<[Square]>,
+    /// `carry` the carry for each column as a _little-endian_ base 10
+    /// numeral.
+    carry: Box<[u16]>,
+    env: Environment,
+    /// We assume that `0 <= col <= target.len()` and `∀ i: (0 <= i <
+    /// col, args.all(|arg| arg[i].is_digit())`.  We include
+    /// target.len() as a valid value of col to deal with the case
+    /// where the puzzle is empty.
     col: usize,
 }
 
-struct Move {
-    var: u8,
-    digit: u8,
+impl fmt::Display for Puzzle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let cols = self.args.get(0).map_or(0, |row| row.len());
+        for row in self.args.iter() {
+            for sq in row.iter().rev() {
+                write!(f, "{sq}")?
+            }
+            f.write_char('\n')?
+        }
+
+        writeln!(f, "{:->width$}", "", width = cols)?;
+
+        for sq in self.target.iter().rev() {
+            write!(f, "{sq}")?
+        }
+        f.write_char('\n')?;
+
+        writeln!(f, "{:->width$}", "", width = cols)?;
+        writeln!(f, "{}", self.env)?;
+        write!(f, "col = {}", self.col)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Move {
+    NextCol,
+    Bind { var: u8, digit: u8 },
+}
+
+impl fmt::Display for Move {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Move::NextCol => write!(f, "Next column"),
+            Move::Bind { var, digit } => {
+                write!(f, "{} => {}", Square::Variable(*var), Square::Digit(*digit))
+            }
+        }
+    }
+}
+
+enum PuzzleParseErr {
+    MissingRows,
+    MightOverflow,
+}
+
+enum MoveErr {
+    BindError(BindError),
+    TrailingZero,
+}
+
+impl From<BindError> for MoveErr {
+    fn from(value: BindError) -> Self {
+        MoveErr::BindError(value)
+    }
 }
 
 impl Puzzle {
-    fn subst_row(row: &mut Vec<Cell>, var_to_digit: &[Option<u8>; 26]) {
-        for c in row.iter_mut() {
-            if let Cell::Variable(v) = *c {
-                if let Some(d) = var_to_digit[v as usize] {
-                    *c = Cell::Digit(d);
-                }
+    pub fn new(words: Vec<Vec<u8>>) -> Result<Self, PuzzleParseErr> {
+        let rows = words.len();
+        if rows < 3 {
+            Err(PuzzleParseErr::MissingRows)
+        } else if rows > usize::from(u16::MAX / 10) {
+            Err(PuzzleParseErr::MightOverflow)
+        } else {
+            let cols = words.iter().map(|word| word.len()).max().unwrap_or(0) + 1;
+
+            let words: Box<[Box<[Square]>]> = words
+                .iter()
+                .map(|arg| {
+                    let mut arg_buffer: Vec<Square> = Vec::with_capacity(cols);
+                    arg_buffer.extend(arg.iter().map(|&letter| Square::Variable(letter)).rev());
+                    arg_buffer.resize(cols, Square::Digit(0));
+                    arg_buffer.into_boxed_slice()
+                })
+                .collect();
+
+            if let Some((target, args)) = words.split_last() {
+                Ok(Self {
+                    args: args.into(),
+                    target: target.clone(),
+                    carry: vec![0; cols].into_boxed_slice(),
+                    env: Environment {
+                        var_to_digit: [None; 26],
+                        digit_mask: [false; 10],
+                    },
+                    col: 0,
+                })
+            } else {
+                Err(PuzzleParseErr::MissingRows)
             }
         }
     }
-    fn subst(&mut self, m: Move) {
-        self.var_to_digit[m.var as usize] = Some(m.digit);
-        for row in self.args.iter_mut() {
-            Puzzle::subst_row(row, &self.var_to_digit);
+    fn subst_row<'a>(cells: &Box<[Square]>, e: &Environment, col: usize) -> Option<Box<[Square]>> {
+        let mut row = cells.clone();
+        let cols = row.len();
+        for (i, sq) in row[col..].iter_mut().enumerate() {
+            if let Square::Variable(var) = sq {
+                if let Some(digit) = e.get(*var) {
+                    if i + col + 2 == cols && digit == 0 {
+                        return None;
+                    } else {
+                        *sq = Square::Digit(digit);
+                    }
+                }
+            }
         }
-        Puzzle::subst_row(&mut self.target, &self.var_to_digit);
+        Some(row)
     }
-    pub fn play(&self, m: Move) -> Option<Self> {
-        debug_assert!((0..26).contains(&m.var));
-        let mut result = self.clone();
-        result.subst(m);
-        for col in result.col..result.target.len() {
-            if result.args.iter().all(|arg| arg[col].is_digit()) {
-                let mut sum: u8 = result
-                    .args
-                    .iter()
-                    .map(|arg| match arg[col] {
-                        Cell::Variable(_) => 0,
-                        Cell::Digit(d) => d,
+    fn try_subst(&self, var: u8, digit: u8) -> Result<Self, MoveErr> {
+        let env = self.env.try_subst(var, digit)?;
+
+        let mut args = self.args.clone();
+        for arg in args.iter_mut() {
+            match Self::subst_row(arg, &env, self.col) {
+                Some(arg_) => *arg = arg_,
+                None => return Err(MoveErr::TrailingZero),
+            }
+        }
+        match Self::subst_row(&self.target, &env, self.col) {
+            Some(target) => Ok(Self {
+                col: self.col,
+                carry: self.carry.clone(),
+                env,
+                args,
+                target,
+            }),
+            None => Err(MoveErr::TrailingZero),
+        }
+    }
+    fn decide_col(&self) -> Result<u8, (u16, u8)> {
+        debug_assert!((0..self.target.len()).contains(&self.col));
+        self.args
+            .iter()
+            .find_map(|arg| arg[self.col].get_var())
+            .ok_or_else(|| {
+                let sum: u16 = self.carry[self.col]
+                    + self
+                        .args
+                        .iter()
+                        .map(|arg| match arg[self.col] {
+                            Square::Variable(_) => 0u16,
+                            Square::Digit(d) => u16::from(d),
+                        })
+                        .sum::<u16>();
+                (sum / 10, (sum % 10) as u8)
+            })
+    }
+
+    // TODO: Need to borrow &mut self to avoid FP allocations, also
+    // allows try subst to modify both args + target.  Not sure if the
+    // allocations make the program all that slow for small inputs,
+    // because I still after all would have to undo all the moves
+    // comprising the path to every failed edge.  I guess it depends
+    // on whether the allocator can "see" that it needs to reserve
+    // space for the entire path, because the memory used to traverse
+    // from the start to any leaf is independent of the leaf.  Would
+    // also have to refactor so that every mutation of self comes from
+    // one Move that's recorded on the call stack, so that we can undo
+    // them later.
+    fn play(&self, m: Move) -> Option<Self> {
+        match m {
+            Move::NextCol => {
+                if self.target.get(self.col)?.is_digit() {
+                    Some(Self {
+                        col: self.col + 1,
+                        ..self.clone()
                     })
-                    .sum();
-                sum += result.carry[col] as u8;
-                let (carry_next, digit) = (sum / 10, sum % 10);
-                match result.target[col] {
-                    Cell::Variable(var) => result.subst(Move { var, digit }),
-                    Cell::Digit(d) => {
-                        if digit != d {
-                            return None;
+                } else {
+                    None
+                }
+            }
+            Move::Bind { var, digit } => self.try_subst(var, digit).ok(),
+        }
+    }
+
+    pub fn frontier(&self) -> Box<dyn Iterator<Item = Self> + '_> {
+        if self.col == self.target.len() {
+            Box::new(std::iter::empty())
+        } else {
+            match self.decide_col() {
+                Ok(var) => {
+                    Box::new((0..10).flat_map(move |digit| self.play(Move::Bind { var, digit })))
+                }
+                Err((carry, sum)) => {
+                    let mut result = Self {
+                        carry: self.carry.clone(),
+                        ..self.clone()
+                    };
+                    if result.col + 1 >= result.carry.len() {
+                        return Box::new(std::iter::empty());
+                    }
+                    result.carry[(result.col + 1) as usize] = carry;
+                    match result.target[result.col] {
+                        Square::Variable(var) => Box::new(
+                            (0..10).flat_map(move |digit| result.play(Move::Bind { var, digit })),
+                        ),
+                        Square::Digit(d) => {
+                            if d == sum {
+                                Box::new(result.play(Move::NextCol).into_iter())
+                            } else {
+                                Box::new(std::iter::empty())
+                            }
                         }
                     }
                 }
-                if carry_next != 0 {
-                    *result.carry.get_mut(col + 1)? = true;
-                }
             }
         }
-        result.col += (result.col..result.target.len())
-            .take_while(|&col| result.args.iter().all(|arg| arg[col].is_digit()))
-            .count();
-        return Some(result);
     }
-    pub fn succ(&self) -> impl Iterator<Item = Self> {
-        todo!()
+
+    fn solve(&self) -> Option<HashMap<char, u8>> {
+        if self.col + 1 == self.target.len() {
+            Some((&self.env).into())
+        } else {
+            self.frontier().find_map(|p| p.solve())
+        }
     }
 }
 
@@ -132,6 +375,7 @@ pub fn solve(input: &str) -> Option<HashMap<char, u8>> {
     let words: Vec<Vec<u8>> = input
         .split(|c: char| !c.is_ascii_uppercase())
         .map(|word| word.bytes().map(|b| b - b'A').collect::<Vec<u8>>())
+        .filter(|word| word.len() > 0)
         .collect();
-    todo!()
+    Puzzle::new(words).ok()?.solve()
 }
