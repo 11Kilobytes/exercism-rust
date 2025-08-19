@@ -1,58 +1,13 @@
 use std::{
     collections::HashMap,
     fmt::{self, Write},
+    ops::{Index, IndexMut},
 };
-
-// We assume that the vectors that make up a valid Puzzle have the
-// same length.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-enum Square {
-    Variable(u8),
-    /// Digit(d) :: a fixed digit d.
-    Digit(u8),
-}
-
-impl Square {
-    fn get_var(&self) -> Option<u8> {
-        match self {
-            Square::Variable(v) => Some(*v),
-            _ => None,
-        }
-    }
-    fn get_digit(&self) -> Option<u8> {
-        match self {
-            Square::Digit(d) => Some(*d),
-            _ => None,
-        }
-    }
-    fn is_var(&self) -> bool {
-        match self {
-            Square::Variable(_) => true,
-            _ => false,
-        }
-    }
-    fn is_digit(&self) -> bool {
-        match self {
-            Square::Digit(_) => true,
-            _ => false,
-        }
-    }
-}
-
-impl fmt::Display for Square {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Square::Variable(v) => f.write_char(char::from(b'A' + v)),
-            Square::Digit(d) => write!(f, "{d}"),
-        }
-    }
-}
 
 /// Solutions to Alphametics puzzles must give a one-to-one mapping
 /// from variable names to their values.  Environments represent this
 /// mapping as an array var_to_digit.  We assume that (digit_mask[d] ==
 /// true) ⬄ a unique element of var_to_digit equals Some(d).
-#[derive(Clone, Debug, Eq, PartialEq)]
 #[derive(Debug, Eq, PartialEq)]
 struct Environment {
     var_to_digit: [Option<u8>; 26],
