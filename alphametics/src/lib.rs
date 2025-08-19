@@ -7,7 +7,7 @@ use std::{
 /// Solutions to Alphametics puzzles must give a one-to-one mapping
 /// from variable names to their values.  Environments represent this
 /// mapping as an array var_to_digit.  We assume that (digit_mask[d] ==
-/// true) ⬄ a unique element of var_to_digit equals Some(d).
+/// true) ⬄ a unique place in var_to_digit equals Some(d).
 #[derive(Debug, Eq, PartialEq)]
 struct Environment {
     var_to_digit: [Option<u8>; 26],
@@ -33,8 +33,8 @@ impl Environment {
         } else if self.digit_mask[digit as usize] {
             Err(BindError::DigitBound)
         } else {
-            self.var_to_digit[var as usize] = Some(digit);
-            self.digit_mask[digit as usize] = true;
+            self.var_to_digit[usize::from(var)] = Some(digit);
+            self.digit_mask[usize::from(digit)] = true;
             Ok(())
         }
     }
@@ -84,47 +84,195 @@ impl From<&Environment> for HashMap<char, u8> {
     }
 }
 
+/// A Grid<T> represents a square 2D-array of elements of type `T`.
+#[derive(PartialEq, Eq)]
+struct Grid<T> {
+    /// We assume that `_data.len() == rows * cols`.  We use
+    /// _column-major_ representation since we will often be doing
+    /// columnwise sums and queries.
+    _data: Box<[T]>,
+    rows: usize,
+    cols: usize,
+}
+impl<T> Grid<T> {
+    fn get(&self, index: (usize, usize)) -> Option<&T> {
+        let (row, col) = index;
+        self._data.get(col * self.rows + row)
+    }
+}
+
+impl<T> Index<(usize, usize)> for Grid<T> {
+    type Output = T;
+
+    fn index(&self, index: (usize, usize)) -> &Self::Output {
+        let (row, col) = index;
+        if row >= self.rows {
+            panic!(
+                "Expected that the row {row} is less than the number of rows {}",
+                self.rows
+            );
+        }
+        if col >= self.cols {
+            panic!(
+                "Expected that the column {col} is less than the number of columns {}",
+                self.cols
+            )
+        }
+        &self._data[col * self.rows + row]
+    }
+}
+
+impl<T> IndexMut<(usize, usize)> for Grid<T> {
+    fn index_mut(&mut self, index: (usize, usize)) -> &mut Self::Output {
+        let (row, col) = index;
+        if row >= self.rows {
+            panic!(
+                "Expected that the row {row} is less than the number of rows {}",
+                self.rows
+            );
+        }
+        if col >= self.cols {
+            panic!(
+                "Expected that the column {col} is less than the number of columns {}",
+                self.cols
+            )
+        }
+        &mut self._data[col * self.rows + row]
+    }
+}
+
+impl<T> Index<usize> for Grid<T> {
+    type Output = [T];
+
+    /// Extracts a reference to the `col`-th column.
+    fn index(&self, col: usize) -> &Self::Output {
+        if col >= self.cols {
+            panic!(
+                "Expected that the row {col} is less than the number of rows {}",
+                self.rows
+            );
+        }
+        &self._data[(col * self.rows)..(col * (self.rows + 1))]
+    }
+}
+
+impl<T> IndexMut<usize> for Grid<T> {
+    /// Extracts an exclusive reference to the `col`-th column.
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        if index >= self.cols {
+            panic!(
+                "Expected that the row {index} is less than the number of rows {}",
+                self.rows
+            );
+        }
+        &mut self._data[(index * self.rows)..(index * (self.rows + 1))]
+    }
+}
+
+enum GridParseErr {
+    JaggedInput,
+    Empty,
+    NoArgs,
+}
+
+impl<T: Clone> TryFrom<&[Vec<T>]> for Grid<T> {
+    type Error = GridParseErr;
+
+    fn try_from(nested_rows: &[Vec<T>]) -> Result<Self, Self::Error> {
+        let rows = nested_rows.len();
+        let cols = nested_rows.get(0).map_or(0, |row| row.len());
+        if rows == cols && nested_rows.iter().all(|row| row.len() == cols) {
+            let mut _data = Box::<[T]>::new_uninit_slice(rows * cols);
+            for (i, row) in nested_rows.iter().enumerate() {
+                for (j, elem) in row.iter().enumerate() {
+                    unsafe { _data[j * rows + i].as_mut_ptr().write(elem.clone()) }
+                }
+            }
+            Ok(Self {
+                _data: unsafe { _data.assume_init() },
+                rows,
+                cols,
+            })
+        } else {
+            Err(GridParseErr::JaggedInput)
+        }
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum CellTag {
+    Variable,
+    Digit,
+}
+
 /// A Puzzle struct represets a partially completed solution to the
-/// equation sum(args + carry) == target, where addition is performed
+/// equation `sum(args + carry) == ret`, where addition is performed
 /// using the column addition method.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq)]
 struct Puzzle {
-    /// `args` represents a 2D array of [squares](Sell).
-    args: Box<[Box<[Square]>]>,
-    /// `target` is represented as a _little-endian_ base 10 numeral
-    /// of [squares](Square).
-    target: Box<[Square]>,
-    /// `carry` the carry for each column as a _little-endian_ base 10
-    /// numeral.
+    /// `args` encoded as a `Grid` of cells. After the puzzle is
+    /// completed, each argument should be a row of the `Grid`,
+    /// encoded as a _little-endian_ base-10 numeral.
+    args: Grid<u8>,
+    /// In order to distinguish between variable names and digits, we
+    /// use a 2D array of [tags](CellTag) to distinguish which is which.  Each
+    /// element of `tags` corresponds to an element of `data`, so that:
+    ///
+    /// 1. Whenever `args_tags[i] == Cell::Variable` we have `0 <= data[i]
+    /// < 26` since there are `26` possible variable names for unknown
+    /// digits, one for each letter of the English alphabet.
+    /// 2. Whenever `args_[i] == Cell::Digit` we have `0 <= data[i] <
+    /// 10`, since the only value for a square has to be a digit in
+    /// `0..10`.
+    args_tags: Grid<CellTag>,
+
+    /// The desired return value for the sum is encoded in a similar way as `args`, but
+    /// we use ordinary boxed slices instead of Grids to encode a 1D vector.
+    /// We assume that `ret.len() == args.cols`.
+    ret: Box<[u8]>,
+    ret_tags: Box<[CellTag]>,
+
+    /// The `carry` row has to be this big to make sure that we never overflow.
     carry: Box<[u16]>,
+
     env: Environment,
-    /// We assume that `0 <= col <= target.len()` and `∀ i: (0 <= i <
-    /// col, args.all(|arg| arg[i].is_digit())`.  We include
-    /// target.len() as a valid value of col to deal with the case
-    /// where the puzzle is empty.
-    col: usize,
 }
 
 impl fmt::Display for Puzzle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let cols = self.args.get(0).map_or(0, |row| row.len());
-        for row in self.args.iter() {
-            for sq in row.iter().rev() {
-                write!(f, "{sq}")?
+        // TODO: Remove repetition using helper function:
+        // `fmt_cell(f: &mut Formatter<'_>, cell: &u8, tag: &CellTag, sep: Option<char>) -> fmt::Result`.
+        for i in 0..self.args.rows {
+            for j in (0..self.args.cols).rev() {
+                let offset = match self.args_tags[(i, j)] {
+                    CellTag::Variable => b'A',
+                    CellTag::Digit => b'0',
+                };
+                if j >= 1 {
+                    write!(f, " ")?;
+                }
+                write!(f, "{}", char::from(offset + self.args[(i, j)]))?;
             }
-            f.write_char('\n')?
+            write!(f, "\n")?;
         }
-
-        writeln!(f, "{:->width$}", "", width = cols)?;
-
-        for sq in self.target.iter().rev() {
-            write!(f, "{sq}")?
+        writeln!(f, "{:->width$}", "", width = self.args.cols)?;
+        let mut ret_iter = self.ret.iter().zip(self.ret_tags.iter()).rev();
+        if let Some((cell, tag)) = ret_iter.next() {
+            let offset = match tag {
+                CellTag::Variable => b'A',
+                CellTag::Digit => b'0',
+            };
+            f.write_char(char::from(offset + cell))?;
         }
-        f.write_char('\n')?;
-
-        writeln!(f, "{:->width$}", "", width = cols)?;
-        writeln!(f, "{}", self.env)?;
-        write!(f, "col = {}", self.col)
+        for (cell, tag) in ret_iter {
+            let offset = match tag {
+                CellTag::Variable => b'A',
+                CellTag::Digit => b'0',
+            };
+            f.write_char(' ')?;
+            f.write_char(char::from(offset + cell))?;
+        }
+        Ok(())
     }
 }
 
