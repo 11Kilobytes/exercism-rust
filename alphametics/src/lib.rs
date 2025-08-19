@@ -238,39 +238,44 @@ struct Puzzle {
     env: Environment,
 }
 
+fn fmt_cell(f: &mut fmt::Formatter<'_>, cell: u8, tag: CellTag, sep: Option<char>) -> fmt::Result {
+    let offset = match tag {
+        CellTag::Variable => b'A',
+        CellTag::Digit => b'0',
+    };
+    if let Some(ch) = sep {
+        f.write_char(ch)?;
+    }
+    f.write_char(char::from(offset + cell))?;
+    Ok(())
+}
+
 impl fmt::Display for Puzzle {
+    // TODO: format the carry row as well.
+    // Instead of `fmt_cell` I might instead go for:
+    // `fn write_row(f: &mut fmt:Formatter<'_>,
+    // rows: impl IntoIterator<Item = u8>,
+    // tags: impl IntoIterator<Item = CellTag>,
+    // widths: impl IntoIterator<Item = usize>) -> fmt::Result`
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO: Remove repetition using helper function:
-        // `fmt_cell(f: &mut Formatter<'_>, cell: &u8, tag: &CellTag, sep: Option<char>) -> fmt::Result`.
         for i in 0..self.args.rows {
             for j in (0..self.args.cols).rev() {
-                let offset = match self.args_tags[(i, j)] {
-                    CellTag::Variable => b'A',
-                    CellTag::Digit => b'0',
-                };
-                if j >= 1 {
-                    write!(f, " ")?;
-                }
-                write!(f, "{}", char::from(offset + self.args[(i, j)]))?;
+                fmt_cell(
+                    f,
+                    self.args[(i, j)],
+                    self.args_tags[(i, j)],
+                    if j == 0 { None } else { Some(' ') },
+                )?;
             }
             write!(f, "\n")?;
         }
         writeln!(f, "{:->width$}", "", width = self.args.cols)?;
         let mut ret_iter = self.ret.iter().zip(self.ret_tags.iter()).rev();
         if let Some((cell, tag)) = ret_iter.next() {
-            let offset = match tag {
-                CellTag::Variable => b'A',
-                CellTag::Digit => b'0',
-            };
-            f.write_char(char::from(offset + cell))?;
+            fmt_cell(f, *cell, *tag, None)?;
         }
         for (cell, tag) in ret_iter {
-            let offset = match tag {
-                CellTag::Variable => b'A',
-                CellTag::Digit => b'0',
-            };
-            f.write_char(' ')?;
-            f.write_char(char::from(offset + cell))?;
+            fmt_cell(f, *cell, *tag, Some(' '));
         }
         Ok(())
     }
