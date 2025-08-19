@@ -292,7 +292,10 @@ impl fmt::Display for Move {
         match self {
             Move::NextCol => write!(f, "Next column"),
             Move::Bind { var, digit } => {
-                write!(f, "{} => {}", Square::Variable(*var), Square::Digit(*digit))
+                fmt_cell(f, *var, CellTag::Variable, None)?;
+                write!(f, " => ")?;
+                fmt_cell(f, *digit, CellTag::Digit, None)?;
+                Ok(())
             }
         }
     }
