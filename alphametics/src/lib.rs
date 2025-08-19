@@ -53,6 +53,7 @@ impl fmt::Display for Square {
 /// mapping as an array var_to_digit.  We assume that (digit_mask[d] ==
 /// true) ⬄ a unique element of var_to_digit equals Some(d).
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 struct Environment {
     var_to_digit: [Option<u8>; 26],
     digit_mask: [bool; 10],
@@ -67,7 +68,7 @@ enum BindError {
 }
 
 impl Environment {
-    pub fn try_subst(&self, var: u8, digit: u8) -> Result<Self, BindError> {
+    pub fn try_subst(&mut self, var: u8, digit: u8) -> Result<(), BindError> {
         if !(0..26).contains(&var) {
             Err(BindError::InvalidVariable)
         } else if self.var_to_digit[var as usize].is_some() {
@@ -77,14 +78,9 @@ impl Environment {
         } else if self.digit_mask[digit as usize] {
             Err(BindError::DigitBound)
         } else {
-            let mut var_to_digit = self.var_to_digit;
-            let mut digit_mask = self.digit_mask;
-            var_to_digit[var as usize] = Some(digit);
-            digit_mask[digit as usize] = true;
-            Ok(Environment {
-                var_to_digit,
-                digit_mask,
-            })
+            self.var_to_digit[var as usize] = Some(digit);
+            self.digit_mask[digit as usize] = true;
+            Ok(())
         }
     }
     pub fn get(&self, var: u8) -> Option<u8> {
@@ -95,13 +91,14 @@ impl Environment {
 impl<const N: usize> TryFrom<[(u8, u8); N]> for Environment {
     type Error = BindError;
     fn try_from(table: [(u8, u8); N]) -> Result<Self, Self::Error> {
-        table.into_iter().try_fold(
-            Environment {
-                var_to_digit: [None; 26],
-                digit_mask: [false; 10],
-            },
-            |acc, (k, v)| acc.try_subst(k, v),
-        )
+        let mut acc = Environment {
+            var_to_digit: [None; 26],
+            digit_mask: [false; 10],
+        };
+        for (var, digit) in table {
+            acc.try_subst(var, digit)?
+        }
+        Ok(acc)
     }
 }
 
