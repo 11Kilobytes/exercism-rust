@@ -206,36 +206,58 @@ enum CellTag {
 }
 
 /// A Puzzle struct represets a partially completed solution to the
-/// equation `sum(args + carry) == ret`, where addition is performed
+/// equation `sum(nums + carry) == ret`, where addition is performed
 /// using the column addition method.
 #[derive(PartialEq, Eq)]
 struct Puzzle {
-    /// `args` encoded as a `Grid` of cells. After the puzzle is
-    /// completed, each argument should be a row of the `Grid`,
-    /// encoded as a _little-endian_ base-10 numeral.
+    /// The arguments `nums` and `ret` are encoded as a `Grid` of
+    /// cells. After the puzzle is completed, each number in the
+    /// arguments should correspond to a row of the `Grid`, encoded as
+    /// a _little-endian_ base-10 numeral.  The last row of `args` encodes
+    /// `ret` and each of the other rows encodes a number in `nums`.
     args: Grid<u8>,
     /// In order to distinguish between variable names and digits, we
-    /// use a 2D array of [tags](CellTag) to distinguish which is which.  Each
-    /// element of `tags` corresponds to an element of `data`, so that:
+    /// use a 2D array of boolean [tags](CellTag) to distinguish which
+    /// is which.  Each place in `tags` corresponds to a place in
+    /// `data` hence `args_tags` and `args` have the same .row and
+    /// .col fields and:
     ///
-    /// 1. Whenever `args_tags[i] == Cell::Variable` we have `0 <= data[i]
-    /// < 26` since there are `26` possible variable names for unknown
-    /// digits, one for each letter of the English alphabet.
-    /// 2. Whenever `args_[i] == Cell::Digit` we have `0 <= data[i] <
-    /// 10`, since the only value for a square has to be a digit in
-    /// `0..10`.
+    /// 1. Whenever `self.args_tags[(i, j)] == CellTag::Variable` we
+    /// have `0 <= self.args[(i, j)] < 26` since there are `26`
+    /// possible variable names for unknown digits, one for each
+    /// letter of the English alphabet.
+    ///
+    /// 2. Whenever `self.args_tags[(i, j)] == CellTag::Digit` we have
+    /// `0 <= self.args[(i, j)] < 10`, since the only value for a
+    /// square has to be a digit in `0..10`.
     args_tags: Grid<CellTag>,
 
-    /// The desired return value for the sum is encoded in a similar way as `args`, but
-    /// we use ordinary boxed slices instead of Grids to encode a 1D vector.
-    /// We assume that `ret.len() == args.cols`.
-    ret: Box<[u8]>,
-    ret_tags: Box<[CellTag]>,
-
-    /// The `carry` row has to be this big to make sure that we never overflow.
+    /// The cells of the `carry` row have to be this big to make sure
+    /// that we never overflow. We assume that `self.carry.len() == self.args.rows`
     carry: Box<[u16]>,
 
     env: Environment,
+
+    /// We assume that the puzzle entries before `col` have been
+    /// filled in to form a partially valid solution, that is:
+
+    /// 1. For every `i, j: usize`: `i < self.rows ∧ j < self.cols ⇒
+    /// self.args_tags[(i, j)] == CellTag::Digit`.
+
+    /// 2. For every `j: usize`: `j < self.cols ⇒ self.args[j][..rows -
+    /// 2].sum() + carry[j] == self.args[(rows - 1, j)] + 10 *
+    /// self.carry.get(j + 1).unwrap_or_else(0)`.
+    col: usize,
+    row: usize,
+
+    /// We keep a running tally of the current column as we try to
+    /// fill it in.  That is: if `self.col < self.cols` so that the
+    /// puzzle is incompete, then `self.sum ==
+    /// self.args[self.col][..self.row].sum()`.  This formulation of the
+    /// invariant implies that we should never have `self.row >
+    /// self.rows` for an incomplete puzzle since this might double
+    /// count the return value.
+    sum: u16,
 }
 
 fn fmt_cell(f: &mut fmt::Formatter<'_>, cell: u8, tag: CellTag, sep: Option<char>) -> fmt::Result {
