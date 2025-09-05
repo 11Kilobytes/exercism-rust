@@ -260,14 +260,11 @@ struct Puzzle {
     sum: u16,
 }
 
-fn fmt_cell(f: &mut fmt::Formatter<'_>, cell: u8, tag: CellTag, sep: Option<char>) -> fmt::Result {
+fn fmt_cell(f: &mut fmt::Formatter<'_>, cell: u8, tag: CellTag) -> fmt::Result {
     let offset = match tag {
         CellTag::Variable => b'A',
         CellTag::Digit => b'0',
     };
-    if let Some(ch) = sep {
-        f.write_char(ch)?;
-    }
     f.write_char(char::from(offset + cell))?;
     Ok(())
 }
@@ -282,28 +279,21 @@ impl fmt::Display for Puzzle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for i in 0..self.args.rows {
             for j in (0..self.args.cols).rev() {
-                fmt_cell(
-                    f,
-                    self.args[(i, j)],
-                    self.args_tags[(i, j)],
-                    if j == 0 { None } else { Some(' ') },
-                )?;
+                if i > 0 {
+                    f.write_char(' ')?;
+                };
+                fmt_cell(f, self.args[(i, j)], self.args_tags[(i, j)])?;
             }
             write!(f, "\n")?;
-        }
-        writeln!(f, "{:->width$}", "", width = self.args.cols)?;
-        let mut ret_iter = self.ret.iter().zip(self.ret_tags.iter()).rev();
-        if let Some((cell, tag)) = ret_iter.next() {
-            fmt_cell(f, *cell, *tag, None)?;
-        }
-        for (cell, tag) in ret_iter {
-            fmt_cell(f, *cell, *tag, Some(' '));
+            if i + 2 == self.args.rows && self.args.cols != 0 {
+                write!(f, "{:-<width$}", "", width = 2 * self.args.cols - 1)?;
+            }
         }
         Ok(())
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug)]
 enum Move {
     NextCol,
     Bind { var: u8, digit: u8 },
@@ -314,9 +304,9 @@ impl fmt::Display for Move {
         match self {
             Move::NextCol => write!(f, "Next column"),
             Move::Bind { var, digit } => {
-                fmt_cell(f, *var, CellTag::Variable, None)?;
+                fmt_cell(f, *var, CellTag::Variable)?;
                 write!(f, " => ")?;
-                fmt_cell(f, *digit, CellTag::Digit, None)?;
+                fmt_cell(f, *digit, CellTag::Digit)?;
                 Ok(())
             }
         }
