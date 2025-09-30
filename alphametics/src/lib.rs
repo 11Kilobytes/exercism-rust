@@ -5,13 +5,19 @@ use std::{
 };
 
 /// Solutions to Alphametics puzzles must give a one-to-one mapping
-/// from variable names to their values.  Environments represent this
-/// mapping as an array var_to_digit.  We assume that (digit_mask[d] ==
-/// true) ⬄ a unique place in var_to_digit equals Some(d).
+/// from variable names to their values.  Environments represent such a
+/// mapping using their `var_to_digit` field, and the inverse mapping
+/// using their `digit_to_var` field.
 #[derive(Debug, Eq, PartialEq)]
 struct Environment {
     var_to_digit: [Option<u8>; 26],
-    digit_mask: [bool; 10],
+    digit_to_var: [Option<u8>; 10],
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum Entry {
+    Old,
+    Fresh { var: u8, digit: u8 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,37 +29,40 @@ enum BindError {
 }
 
 impl Environment {
-    pub fn try_subst(&mut self, var: u8, digit: u8) -> Result<(), BindError> {
-        if !(0..26).contains(&var) {
-            Err(BindError::InvalidVariable)
-        } else if self.var_to_digit[var as usize].is_some() {
-            Err(BindError::VariableBound)
-        } else if !(0..10).contains(&digit) {
-            Err(BindError::InvalidDigit)
-        } else if self.digit_mask[digit as usize] {
-            Err(BindError::DigitBound)
-        } else {
-            self.var_to_digit[usize::from(var)] = Some(digit);
-            self.digit_mask[usize::from(digit)] = true;
-            Ok(())
+    pub fn new() -> Self {
+        Self {
+            var_to_digit: [None; 26],
+            digit_to_var: [None; 10],
         }
     }
     pub fn get(&self, var: u8) -> Option<u8> {
         *self.var_to_digit.get(var as usize)?
     }
-}
-
-impl<const N: usize> TryFrom<[(u8, u8); N]> for Environment {
-    type Error = BindError;
-    fn try_from(table: [(u8, u8); N]) -> Result<Self, Self::Error> {
-        let mut acc = Environment {
-            var_to_digit: [None; 26],
-            digit_mask: [false; 10],
-        };
-        for (var, digit) in table {
-            acc.try_subst(var, digit)?
+    pub fn try_bind(&mut self, var: u8, digit: u8) -> Result<Entry, BindError> {
+        if !(0..26).contains(&var) {
+            Err(BindError::InvalidVariable)
+        } else if !(0..10).contains(&digit) {
+            Err(BindError::InvalidDigit)
+        } else if self.var_to_digit[usize::from(var)] == Some(digit) {
+            Ok(Entry::Old)
+        } else if self.var_to_digit[usize::from(var)].is_some() {
+            Err(BindError::VariableBound)
+        } else if self.digit_to_var[usize::from(digit)].is_some() {
+            Err(BindError::DigitBound)
+        } else {
+            self.var_to_digit[usize::from(var)] = Some(digit);
+            self.digit_to_var[usize::from(digit)] = Some(var);
+            Ok(Entry::Fresh { var, digit })
         }
-        Ok(acc)
+    }
+    // pub fn free_digits(&self) -> impl Iterator<Item = u8> + use<'_> {
+    //     (0u8..10).filter(|&d| self.digit_to_var[usize::from(d)].is_none())
+    // }
+    pub fn unbind(&mut self, entry: Entry) {
+        if let Entry::Fresh { var, digit } = entry {
+            self.digit_to_var[usize::from(digit)] = None;
+            self.var_to_digit[usize::from(var)] = None;
+        }
     }
 }
 
@@ -94,6 +103,14 @@ struct Grid<T> {
     rows: usize,
     cols: usize,
 }
+
+impl<T: Clone> Grid<T> {
+    fn replicate(elem: T, rows: usize, cols: usize) -> Self {
+        let mut _data = vec![elem; rows * cols].into_boxed_slice();
+        Self { _data, rows, cols }
+    }
+}
+
 impl<T> Grid<T> {
     fn get(&self, index: (usize, usize)) -> Option<&T> {
         let (row, col) = index;
@@ -152,50 +169,34 @@ impl<T> Index<usize> for Grid<T> {
                 self.rows
             );
         }
-        &self._data[(col * self.rows)..(col * (self.rows + 1))]
+        &self._data[(col * self.rows)..((col + 1) * self.rows)]
     }
 }
 
 impl<T> IndexMut<usize> for Grid<T> {
     /// Extracts an exclusive reference to the `col`-th column.
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        if index >= self.cols {
+    fn index_mut(&mut self, col: usize) -> &mut Self::Output {
+        if col >= self.cols {
             panic!(
-                "Expected that the row {index} is less than the number of rows {}",
+                "Expected that the row {col} is less than the number of rows {}",
                 self.rows
             );
         }
-        &mut self._data[(index * self.rows)..(index * (self.rows + 1))]
+        &mut self._data[(col * self.rows)..((col + 1) * self.rows)]
     }
 }
 
-enum GridParseErr {
-    JaggedInput,
-    Empty,
-    NoArgs,
-}
-
-impl<T: Clone> TryFrom<&[Vec<T>]> for Grid<T> {
-    type Error = GridParseErr;
-
-    fn try_from(nested_rows: &[Vec<T>]) -> Result<Self, Self::Error> {
+impl<T: Clone + Default> From<&[Vec<T>]> for Grid<T> {
+    fn from(nested_rows: &[Vec<T>]) -> Grid<T> {
         let rows = nested_rows.len();
-        let cols = nested_rows.get(0).map_or(0, |row| row.len());
-        if rows == cols && nested_rows.iter().all(|row| row.len() == cols) {
-            let mut _data = Box::<[T]>::new_uninit_slice(rows * cols);
-            for (i, row) in nested_rows.iter().enumerate() {
-                for (j, elem) in row.iter().enumerate() {
-                    unsafe { _data[j * rows + i].as_mut_ptr().write(elem.clone()) }
-                }
+        let cols = nested_rows.iter().map(|row| row.len()).max().unwrap_or(0);
+        let mut _data = vec![Default::default(); rows * cols].into_boxed_slice();
+        for (i, row) in nested_rows.iter().enumerate() {
+            for (j, elem) in row.iter().enumerate() {
+                _data[j * rows + i] = elem.clone();
             }
-            Ok(Self {
-                _data: unsafe { _data.assume_init() },
-                rows,
-                cols,
-            })
-        } else {
-            Err(GridParseErr::JaggedInput)
         }
+        Self { _data, rows, cols }
     }
 }
 
@@ -203,6 +204,12 @@ impl<T: Clone> TryFrom<&[Vec<T>]> for Grid<T> {
 enum CellTag {
     Variable,
     Digit,
+}
+
+impl Default for CellTag {
+    fn default() -> Self {
+        CellTag::Digit
+    }
 }
 
 /// A Puzzle struct represets a partially completed solution to the
@@ -219,44 +226,39 @@ struct Puzzle {
     /// In order to distinguish between variable names and digits, we
     /// use a 2D array of boolean [tags](CellTag) to distinguish which
     /// is which.  Each place in `tags` corresponds to a place in
-    /// `data` hence `args_tags` and `args` have the same .row and
-    /// .col fields and:
+    /// `data` hence `args_tags` and `args` have the same `.row` and
+    /// `.col` fields and:
     ///
-    /// 1. Whenever `self.args_tags[(i, j)] == CellTag::Variable` we
-    /// have `0 <= self.args[(i, j)] < 26` since there are `26`
+    /// 1. Whenever `self.args_tags[i, j] == CellTag::Variable` we
+    /// have `0 <= self.args[i, j] < 26` since there are `26`
     /// possible variable names for unknown digits, one for each
     /// letter of the English alphabet.
     ///
-    /// 2. Whenever `self.args_tags[(i, j)] == CellTag::Digit` we have
-    /// `0 <= self.args[(i, j)] < 10`, since the only value for a
+    /// 2. Whenever `self.args_tags[i, j] == CellTag::Digit` we have
+    /// `0 <= self.args[i, j] < 10`, since the only value for a
     /// square has to be a digit in `0..10`.
     args_tags: Grid<CellTag>,
 
-    /// The cells of the `carry` row have to be this big to make sure
-    /// that we never overflow. We assume that `self.carry.len() == self.args.rows`
-    carry: Box<[u16]>,
+    /// We need to remember the sum of a column after moving on to the
+    /// next one in order to be able to backtrack after a failing
+    /// move.  For every `j : usize`, `j < self.col ⇒
+    /// self.args[j,..-1].sum() == self.sums[j]`.
+    sums: Box<[u16]>,
 
     env: Environment,
 
     /// We assume that the puzzle entries before `col` have been
     /// filled in to form a partially valid solution, that is:
 
-    /// 1. For every `i, j: usize`: `i < self.rows ∧ j < self.cols ⇒
-    /// self.args_tags[(i, j)] == CellTag::Digit`.
-
-    /// 2. For every `j: usize`: `j < self.cols ⇒ self.args[j][..rows -
-    /// 2].sum() + carry[j] == self.args[(rows - 1, j)] + 10 *
-    /// self.carry.get(j + 1).unwrap_or_else(0)`.
+    /// For every `i, j: usize`: `(j, i) < (self.col, self.row) ⇒
+    /// self.args_tags[i, j] == CellTag::Digit`.
     col: usize,
     row: usize,
 
     /// We keep a running tally of the current column as we try to
     /// fill it in.  That is: if `self.col < self.cols` so that the
-    /// puzzle is incompete, then `self.sum ==
-    /// self.args[self.col][..self.row].sum()`.  This formulation of the
-    /// invariant implies that we should never have `self.row >
-    /// self.rows` for an incomplete puzzle since this might double
-    /// count the return value.
+    /// puzzle is incompete, then `self.sum == self.args[0..self.row,
+    /// self.col].sum()`.
     sum: u16,
 }
 
@@ -277,17 +279,29 @@ impl fmt::Display for Puzzle {
     // tags: impl IntoIterator<Item = CellTag>,
     // widths: impl IntoIterator<Item = usize>) -> fmt::Result`
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f)?;
         for i in 0..self.args.rows {
             for j in (0..self.args.cols).rev() {
-                if i > 0 {
+                if j + 1 < self.args.cols {
                     f.write_char(' ')?;
                 };
                 fmt_cell(f, self.args[(i, j)], self.args_tags[(i, j)])?;
             }
             write!(f, "\n")?;
             if i + 2 == self.args.rows && self.args.cols != 0 {
-                write!(f, "{:-<width$}", "", width = 2 * self.args.cols - 1)?;
+                writeln!(f, "{:-<width$}", "", width = 2 * self.args.cols - 1)?;
             }
+        }
+        writeln!(f, "Environment: {}", self.env)?;
+        writeln!(f, "Cursor: ({}, {})", self.row, self.col)?;
+        writeln!(f, "Sum: {}", self.sum)?;
+        write!(f, "Sums: ")?;
+        let mut iter = self.sums.iter().rev();
+        if let Some(s) = iter.next() {
+            write!(f, "{s}")?;
+        }
+        for s in iter {
+            write!(f, " {s}")?;
         }
         Ok(())
     }
@@ -295,32 +309,21 @@ impl fmt::Display for Puzzle {
 
 #[derive(PartialEq, Eq, Debug)]
 enum Move {
-    NextCol,
-    Bind { var: u8, digit: u8 },
+    Carry { digit: u8, carry: u16 },
+    Bind { row: usize, digit: u8 },
+    FindVar { row: usize },
 }
 
-impl fmt::Display for Move {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Move::NextCol => write!(f, "Next column"),
-            Move::Bind { var, digit } => {
-                fmt_cell(f, *var, CellTag::Variable)?;
-                write!(f, " => ")?;
-                fmt_cell(f, *digit, CellTag::Digit)?;
-                Ok(())
-            }
-        }
-    }
-}
-
-enum PuzzleParseErr {
-    MissingRows,
+enum PuzzleParseErr<'a> {
+    InvalidWord(&'a str, char),
+    InvalidSuffix(&'a str),
+    InvalidSep(&'a str),
     MightOverflow,
 }
 
 enum MoveErr {
     BindError(BindError),
-    NonZeroCarry,
+    NonZeroTerminalCarry,
 }
 impl From<BindError> for MoveErr {
     fn from(value: BindError) -> Self {
@@ -329,47 +332,184 @@ impl From<BindError> for MoveErr {
 }
 
 impl Puzzle {
-    fn try_move(&mut self, m: Move) -> Result<(), MoveErr> {
-        match m {
-            Move::NextCol => {
-                todo!()
+    fn try_move(&mut self, m: &Move) -> Result<Entry, MoveErr> {
+        // TODO: Doesn't deal with empty rows correctly, e.g. I'd claim that " + == A" is a valid puzzle,
+        // with the solution A = 0 since the sum of an empty series is zero.
+        match *m {
+            Move::Carry { digit, carry } => {
+                debug_assert!(self.row + 1 == self.args.rows);
+                debug_assert!(self.args_tags[(self.row, self.col)] == CellTag::Variable);
+                let binding = self.env.try_bind(self.args[(self.row, self.col)], digit)?;
+                self.args_tags[(self.row, self.col)] = CellTag::Digit;
+                self.args[(self.row, self.col)] = digit;
+                self.sums[self.col] = self.sum;
+                if carry != 0 && self.col + 1 == self.args.cols {
+                    Err(MoveErr::NonZeroTerminalCarry)
+                } else {
+                    self.col += 1;
+                    self.sum = carry;
+                    self.row = 0;
+                    Ok(binding)
+                }
             }
-            Move::Bind { var, digit } => {
-                self.env.try_subst(var, digit)?;
+            Move::Bind { row, digit } => {
+                debug_assert!(self.row == row);
+                debug_assert!(self.args_tags[(self.row, self.col)] == CellTag::Variable);
+                let binding = self.env.try_bind(self.args[(self.row, self.col)], digit)?;
                 loop {
                     if let Some(CellTag::Variable) = self.args_tags.get((self.row, self.col)) {
                         if let Some(d) = self.env.get(self.args[(self.row, self.col)]) {
-                            self.args_tags[(self.row, self.col)] = CellTag::Digit;
-                            self.args[(self.row, self.col)] = d;
                             if self.row + 1 < self.args.rows {
+                                self.args_tags[(self.row, self.col)] = CellTag::Digit;
+                                self.args[(self.row, self.col)] = d;
                                 self.sum += u16::from(d);
                                 self.row += 1;
                                 continue;
-                            } else {
-                                break Ok(());
                             }
                         }
                     }
-                    break Ok(());
+                    break Ok(binding);
                 }
+            }
+
+            Move::FindVar { row: _ } => {
+                debug_assert!(self.col < self.args.cols);
+                self.row = self.args_tags[self.col]
+                    .iter()
+                    .position(|&t| t == CellTag::Variable)
+                    .unwrap_or(self.args.rows);
+                Ok(Entry::Old)
             }
         }
     }
-    fn undo_move(&mut self, m: Move) {
-        match m {
-            Move::NextCol => todo!(),
-            Move::Bind { var, digit } => todo!(),
+    fn undo_move(&mut self, m: &Move, e: Entry) {
+        eprintln!("Undoing Move {:?}, Entry {:?}: ", m, e);
+        match *m {
+            Move::Carry { digit, carry: _ } => {
+                self.sums[self.col] = 0;
+                self.col -= 1;
+                self.row = self.args.rows - 1;
+                self.sum = self.sums[self.col];
+                self.args_tags[(self.row, self.col)] = CellTag::Variable;
+                self.args[(self.row, self.col)] =
+                    self.env.digit_to_var[usize::from(digit)].expect(&format!(
+                        "The digit {digit} should have been bound in the environment {}",
+                        self.env
+                    ));
+            }
+            Move::Bind { row, digit: _ } => {
+                let row = usize::from(row);
+                for (tag, cell) in &mut self.args_tags[self.col][row..self.row]
+                    .iter_mut()
+                    .zip(&mut self.args[self.col][row..self.row])
+                {
+                    self.row -= 1;
+                    self.sum -= u16::from(*cell);
+                    *tag = CellTag::Variable;
+                    *cell = self.env.digit_to_var[usize::from(*cell)].expect(&format!(
+                        "The digit {cell} should have been bound in the environment {}",
+                        self.env
+                    ));
+                }
+            }
+            Move::FindVar { row } => self.row = row,
+        }
+        self.env.unbind(e);
+    }
+    fn frontier(&self) -> Box<dyn Iterator<Item = Move>> {
+        let row = self.row;
+        if self.args_tags[(self.row, self.col)] != CellTag::Variable {
+            Box::new(std::iter::once(Move::FindVar { row }))
+        } else if self.row + 1 < self.args.rows {
+            Box::new((0..10u8).map(move |d| Move::Bind { row, digit: d }))
+        } else {
+            let (digit, carry) = (
+                u8::try_from(self.sum % 10)
+                    .expect("(% 10) has the range 0..10 each element of which fits in a u8"),
+                self.sum / 10,
+            );
+            Box::new(std::iter::once(Move::Carry { digit, carry }))
         }
     }
-    fn frontier(&self) -> impl Iterator<Item = Move> {}
-    fn solve(&mut self) -> Option<HashMap<char, u8>> {}
+    fn solve(&mut self) -> Option<HashMap<char, u8>> {
+        eprintln!("Solving: {}", self);
+        if self.col >= self.args.cols {
+            return Some((&self.env).into());
+        }
+        for m in self.frontier() {
+            eprintln!("Considering Move {:?}", m);
+            if let Ok(binding) = self.try_move(&m) {
+                eprintln!("Applied Move {:?}", m);
+                if let Some(ret) = self.solve() {
+                    return Some(ret);
+                } else {
+                    self.undo_move(&m, binding);
+                    eprintln!("Undone {}", self);
+                }
+            }
+        }
+        return None;
+    }
+
+    fn parse(input: &str) -> Result<Self, PuzzleParseErr<'_>> {
+        enum ParseState {
+            Word,
+            Sep,
+            Ret,
+            Trailing,
+        }
+        let mut state = ParseState::Word;
+        let mut words: Vec<Vec<u8>> = Vec::new();
+        for tok in input.split_ascii_whitespace() {
+            match state {
+                ParseState::Word => {
+                    if let Some(c) = tok.chars().find(|c| !c.is_ascii_uppercase()) {
+                        return Err(PuzzleParseErr::InvalidWord(tok, c));
+                    } else {
+                        state = ParseState::Sep;
+                        words.push(tok.bytes().map(|c| c - b'A').rev().collect());
+                    }
+                }
+                ParseState::Sep => {
+                    if tok == "+" {
+                        state = ParseState::Word;
+                    } else if tok == "==" {
+                        state = ParseState::Ret;
+                    } else {
+                        return Err(PuzzleParseErr::InvalidSep(tok));
+                    }
+                }
+                ParseState::Ret => {
+                    if let Some(c) = tok.chars().find(|c| !c.is_ascii_uppercase()) {
+                        return Err(PuzzleParseErr::InvalidWord(tok, c));
+                    } else {
+                        state = ParseState::Trailing;
+                        words.push(tok.bytes().map(|c| c - b'A').rev().collect());
+                    }
+                }
+                ParseState::Trailing => return Err(PuzzleParseErr::InvalidSuffix(tok)),
+            }
+        }
+        let args = Grid::<u8>::from(&words[..]);
+        let args_tags = Grid::<CellTag>::from(
+            &(words
+                .iter()
+                .map(|word| vec![CellTag::Variable; word.len()])
+                .collect::<Vec<Vec<_>>>())[..],
+        );
+        let sums = vec![0; args.cols].into_boxed_slice();
+        Ok(Self {
+            args,
+            args_tags,
+            sums,
+            env: Environment::new(),
+            col: 0,
+            row: 0,
+            sum: 0,
+        })
+    }
 }
 
 pub fn solve(input: &str) -> Option<HashMap<char, u8>> {
-    let words: Vec<Vec<u8>> = input
-        .split(|c: char| !c.is_ascii_uppercase())
-        .map(|word| word.bytes().map(|b| b - b'A').collect::<Vec<u8>>())
-        .filter(|word| word.len() > 0)
-        .collect();
-    Puzzle::parse(words).ok()?.solve()
+    Puzzle::parse(input).ok()?.solve()
 }
