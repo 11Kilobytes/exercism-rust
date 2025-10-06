@@ -55,9 +55,9 @@ impl Environment {
             Ok(Entry::Fresh { var, digit })
         }
     }
-    // pub fn free_digits(&self) -> impl Iterator<Item = u8> + use<'_> {
-    //     (0u8..10).filter(|&d| self.digit_to_var[usize::from(d)].is_none())
-    // }
+    pub fn free_digits(&self) -> impl Iterator<Item = u8> + use<'_> {
+        (0u8..10).filter(|&d| self.digit_to_var[usize::from(d)].is_none())
+    }
     pub fn unbind(&mut self, entry: Entry) {
         if let Entry::Fresh { var, digit } = entry {
             self.digit_to_var[usize::from(digit)] = None;
@@ -260,6 +260,13 @@ struct Puzzle {
     /// puzzle is incompete, then `self.sum == self.args[0..self.row,
     /// self.col].sum()`.
     sum: u16,
+
+    /// A valid Puzzle cannot have zeros as its leading digits, so we
+    /// need to determine which digits are leading digits. We cannot
+    /// do so by looking at the next digit in the same row and
+    /// checking whether it's zero because of the padding zeros.  Hence
+    /// we have to track the length of each row before paddings.
+    lens: Box<[usize]>,
 }
 
 fn fmt_cell(f: &mut fmt::Formatter<'_>, cell: u8, tag: CellTag) -> fmt::Result {
@@ -309,9 +316,9 @@ impl fmt::Display for Puzzle {
 
 #[derive(PartialEq, Eq, Debug)]
 enum Move {
-    Carry { digit: u8, carry: u16 },
+    Carry,
     Bind { row: usize, digit: u8 },
-    FindVar { row: usize },
+    SkipZeros { row: usize },
 }
 
 enum PuzzleParseErr<'a> {
@@ -324,6 +331,7 @@ enum PuzzleParseErr<'a> {
 enum MoveErr {
     BindError(BindError),
     NonZeroTerminalCarry,
+    ZeroTrailingDigit,
 }
 impl From<BindError> for MoveErr {
     fn from(value: BindError) -> Self {
@@ -336,16 +344,19 @@ impl Puzzle {
         // TODO: Doesn't deal with empty rows correctly, e.g. I'd claim that " + == A" is a valid puzzle,
         // with the solution A = 0 since the sum of an empty series is zero.
         match *m {
-            Move::Carry { digit, carry } => {
-                debug_assert!(self.row + 1 == self.args.rows);
-                debug_assert!(self.args_tags[(self.row, self.col)] == CellTag::Variable);
+            Move::Carry => {
+                let digit = (self.sum % 10) as u8;
+                let carry = self.sum / 10;
+                if self.col + 1 == self.lens[self.row] && digit == 0 {
+                    return  Err(MoveErr::ZeroTrailingDigit);
+                }
                 let binding = self.env.try_bind(self.args[(self.row, self.col)], digit)?;
-                self.args_tags[(self.row, self.col)] = CellTag::Digit;
-                self.args[(self.row, self.col)] = digit;
-                self.sums[self.col] = self.sum;
                 if carry != 0 && self.col + 1 == self.args.cols {
                     Err(MoveErr::NonZeroTerminalCarry)
                 } else {
+                    self.args_tags[(self.row, self.col)] = CellTag::Digit;
+                    self.args[(self.row, self.col)] = digit;
+                    self.sums[self.col] = self.sum;
                     self.col += 1;
                     self.sum = carry;
                     self.row = 0;
@@ -353,8 +364,9 @@ impl Puzzle {
                 }
             }
             Move::Bind { row, digit } => {
-                debug_assert!(self.row == row);
-                debug_assert!(self.args_tags[(self.row, self.col)] == CellTag::Variable);
+                if self.col + 1 == self.lens[self.row] && digit == 0 {
+                    return Err(MoveErr::ZeroTrailingDigit);
+                };
                 let binding = self.env.try_bind(self.args[(self.row, self.col)], digit)?;
                 loop {
                     if let Some(CellTag::Variable) = self.args_tags.get((self.row, self.col)) {
@@ -371,13 +383,12 @@ impl Puzzle {
                     break Ok(binding);
                 }
             }
-
-            Move::FindVar { row: _ } => {
-                debug_assert!(self.col < self.args.cols);
-                self.row = self.args_tags[self.col]
-                    .iter()
-                    .position(|&t| t == CellTag::Variable)
-                    .unwrap_or(self.args.rows);
+            Move::SkipZeros { row: _ } => {
+                while self.row < self.args.rows
+                    && self.args_tags[(self.row, self.col)] == CellTag::Digit
+                {
+                    self.row += 1;
+                }
                 Ok(Entry::Old)
             }
         }
@@ -385,17 +396,18 @@ impl Puzzle {
     fn undo_move(&mut self, m: &Move, e: Entry) {
         eprintln!("Undoing Move {:?}, Entry {:?}: ", m, e);
         match *m {
-            Move::Carry { digit, carry: _ } => {
-                self.sums[self.col] = 0;
-                self.col -= 1;
+            Move::Carry => {
                 self.row = self.args.rows - 1;
+                self.col -= 1;
                 self.sum = self.sums[self.col];
                 self.args_tags[(self.row, self.col)] = CellTag::Variable;
-                self.args[(self.row, self.col)] =
-                    self.env.digit_to_var[usize::from(digit)].expect(&format!(
-                        "The digit {digit} should have been bound in the environment {}",
-                        self.env
-                    ));
+                let digit = self.args[(self.row, self.col)];
+                self.args[(self.row, self.col)] = self.env.digit_to_var
+                    [usize::from(self.args[(self.row, self.col)])]
+                .expect(&format!(
+                    "The digit {digit} should have been bound in the environment {}",
+                    self.env
+                ));
             }
             Move::Bind { row, digit: _ } => {
                 let row = usize::from(row);
@@ -412,39 +424,34 @@ impl Puzzle {
                     ));
                 }
             }
-            Move::FindVar { row } => self.row = row,
+            Move::SkipZeros { row } => self.row = row,
         }
         self.env.unbind(e);
     }
-    fn frontier(&self) -> Box<dyn Iterator<Item = Move>> {
+    fn frontier(&self) -> Vec<Move> {
         let row = self.row;
-        if self.args_tags[(self.row, self.col)] != CellTag::Variable {
-            Box::new(std::iter::once(Move::FindVar { row }))
-        } else if self.row + 1 < self.args.rows {
-            Box::new((0..10u8).map(move |d| Move::Bind { row, digit: d }))
+        if self.row + 1 < self.args.rows {
+            if self.args_tags[(self.row, self.col)] == CellTag::Digit {
+                vec![Move::SkipZeros { row }]
+            } else if let Some(digit) = self.env.get(self.args[(self.row, self.col)]) {
+                vec![Move::Bind { row, digit }]
+            } else {
+                self.env.free_digits().map(|d| Move::Bind { row, digit: d }).collect()
+            }
         } else {
-            let (digit, carry) = (
-                u8::try_from(self.sum % 10)
-                    .expect("(% 10) has the range 0..10 each element of which fits in a u8"),
-                self.sum / 10,
-            );
-            Box::new(std::iter::once(Move::Carry { digit, carry }))
+            vec![Move::Carry]
         }
     }
     fn solve(&mut self) -> Option<HashMap<char, u8>> {
-        eprintln!("Solving: {}", self);
         if self.col >= self.args.cols {
             return Some((&self.env).into());
         }
         for m in self.frontier() {
-            eprintln!("Considering Move {:?}", m);
             if let Ok(binding) = self.try_move(&m) {
-                eprintln!("Applied Move {:?}", m);
                 if let Some(ret) = self.solve() {
                     return Some(ret);
                 } else {
                     self.undo_move(&m, binding);
-                    eprintln!("Undone {}", self);
                 }
             }
         }
@@ -497,11 +504,13 @@ impl Puzzle {
                 .map(|word| vec![CellTag::Variable; word.len()])
                 .collect::<Vec<Vec<_>>>())[..],
         );
+        let lens = words.iter().map(|word| word.len()).collect();
         let sums = vec![0; args.cols].into_boxed_slice();
         Ok(Self {
             args,
             args_tags,
             sums,
+            lens,
             env: Environment::new(),
             col: 0,
             row: 0,
