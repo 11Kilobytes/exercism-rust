@@ -1,4 +1,6 @@
 (specifications->manifest
  '("rust:tools"
    "rust"
-   "rust:cargo"))
+   "rust:cargo"
+   "exercism"
+   ))
