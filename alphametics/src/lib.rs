@@ -1,5 +1,4 @@
 use itertools::Itertools;
-use core::fmt;
 use std::collections::HashMap;
 
 #[derive(Debug)]
@@ -14,30 +13,8 @@ enum PuzzleParseErr<'a> {
     LongWord(&'a str),
     InvalidSuffix(&'a str),
     InvalidSep(&'a str),
-    MightOverflow,
 }
 
-impl fmt::Display for Puzzle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (i, &w) in (0..26).zip(self.weights.iter()) {
-            if w != 0 {
-                writeln!(f, "{} => {}", char::from(b'A' + i), w)?;
-            }
-        }
-        write!(f, "Zero Excluded:")?;
-        for i in 0..26u8 {
-            if self.zero_excluded[usize::from(i)] {
-                write!(f, " {}", char::from(b'A' + i))?;
-            }
-        }
-        writeln!(f)?;
-        write!(f, "Letters:")?;
-        for &l in self.letters.iter() {
-            write!(f, " {}", char::from(b'A' + l))?;
-        }
-        Ok(())
-    }
-}
 impl Puzzle {
     fn no_trailing_zero(&self, perm: &Vec<u8>) -> bool {
         if let Some(l) = perm.iter().position(|&d| d == 0) {
@@ -55,7 +32,6 @@ impl Puzzle {
             == 0
     }
     fn solve(&self) -> Option<HashMap<char, u8>> {
-        eprintln!("Solving {}", self);
         let solution = (0..10u8)
             .permutations(self.letters.len())
             .find(|perm| self.no_trailing_zero(perm) && self.balances(perm))?;
