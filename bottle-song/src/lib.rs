@@ -110,14 +110,7 @@ impl fmt::Display for EnglishNumeral {
             }
             chunks_str.push(buf);
         }
-        let mut chunks_iter = chunks_str.iter();
-        if let Some(chunk_str) = chunks_iter.next() {
-            f.write_str(chunk_str)?;
-        }
-        for chunk_str in chunks_iter {
-            write!(f, " {chunk_str}")?;
-        }
-        Ok(())
+        write!(f, "{}", chunks_str.join(" "))
     }
 }
 
