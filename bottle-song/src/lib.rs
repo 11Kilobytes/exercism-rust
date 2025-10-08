@@ -115,7 +115,7 @@ impl fmt::Display for EnglishNumeral {
             f.write_str(chunk_str)?;
         }
         for chunk_str in chunks_iter {
-            write!(f, " {}", chunk_str)?;
+            write!(f, " {chunk_str}")?;
         }
         Ok(())
     }
