@@ -12,12 +12,7 @@ enum Frame {
 }
 impl Frame {
     const fn bonus_throws(&self) -> u8 {
-        // Could probably use std::mem::discriminant() for this.
-        match self {
-            Frame::Open => 0,
-            Frame::Spare => 1,
-            Frame::Strike => 2,
-        }
+        *self as u8
     }
 }
 const FRAMES: usize = 10;
@@ -79,25 +74,25 @@ impl BowlingGame {
         }
     }
     pub fn score(&self) -> Option<u16> {
-        if !self.done() {
-            None
-        } else {
-            Some(
-                (0..FRAMES)
-                    .map(|f| {
-                        self.throws[(2 * f)..(2 * f + 2)].iter().flatten().sum::<u16>() + {
-                            let frame = self.frames[f].expect(
+        self.done().then(|| {
+            (0..FRAMES)
+                .map(|f| {
+                    self.throws[(2 * f)..(2 * f + 2)]
+                        .iter()
+                        .flatten()
+                        .sum::<u16>()
+                        + {
+                            let next_frame = self.frames[f].expect(
                                 "Since the puzzle is complete all frames should satisfy is_some()",
                             );
                             self.throws[2 * (f + 1)..]
                                 .iter()
                                 .flatten()
-                                .take(usize::from(frame.bonus_throws()))
+                                .take(usize::from(next_frame.bonus_throws()))
                                 .sum::<u16>()
                         }
-                    })
-                    .sum(),
-            )
-        }
+                })
+                .sum()
+        })
     }
 }
