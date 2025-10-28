@@ -49,18 +49,16 @@ impl fmt::Display for EnglishNumeral {
         if self.num == 0 {
             return f.write_str(if self.capitalized { "Zero" } else { "zero" });
         }
-        let mut chunks_str = Vec::new();
-        let digits = self.num.to_string();
+        let mut digits = self.num.to_string();
+        digits.insert_str(0, &"0".repeat(3 - digits.len() % 3));
         let mut should_capitalize = self.capitalized;
-        for (scale, chunk) in digits.as_bytes().rchunks(3).enumerate().rev() {
-            let mut buf = String::new();
-            let mut digits = chunk.iter().rev();
-            let ones = digits.next().unwrap_or(&b'0') - b'0';
-            let tens = digits.next().unwrap_or(&b'0') - b'0';
-            let hundreds = digits.next().unwrap_or(&b'0') - b'0';
+        for (scale, chunk) in digits.as_bytes().rchunks_exact(3).enumerate().rev() {
+            let hundreds = chunk[0] - b'0';
+            let tens = chunk[1] - b'0';
+            let ones = chunk[2] - b'0';
             if hundreds != 0 {
                 write!(
-                    &mut buf,
+                    f,
                     "{} hundred and ",
                     if should_capitalize {
                         should_capitalize = false;
@@ -72,7 +70,7 @@ impl fmt::Display for EnglishNumeral {
             }
             if tens == 1 {
                 write!(
-                    &mut buf,
+                    f,
                     "{}",
                     if should_capitalize {
                         should_capitalize = false;
@@ -84,7 +82,7 @@ impl fmt::Display for EnglishNumeral {
             } else {
                 if tens != 0 {
                     write!(
-                        &mut buf,
+                        f,
                         "{}-",
                         if should_capitalize {
                             should_capitalize = false;
@@ -95,7 +93,7 @@ impl fmt::Display for EnglishNumeral {
                     )?;
                 }
                 write!(
-                    &mut buf,
+                    f,
                     "{}",
                     if should_capitalize {
                         should_capitalize = false;
@@ -106,11 +104,11 @@ impl fmt::Display for EnglishNumeral {
                 )?;
             }
             if scale != 0 {
-                write!(&mut buf, " {}", SHORT_SCALE[scale])?;
+                write!(f, " {} ", SHORT_SCALE[scale])?;
             }
-            chunks_str.push(buf);
+
         }
-        write!(f, "{}", chunks_str.join(" "))
+        Ok(())
     }
 }
 
