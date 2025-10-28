@@ -54,10 +54,10 @@ impl fmt::Display for EnglishNumeral {
         let mut should_capitalize = self.capitalized;
         for (scale, chunk) in digits.as_bytes().rchunks(3).enumerate().rev() {
             let mut buf = String::new();
-            let chunk: Vec<&u8> = chunk.iter().rev().collect();
-            let hundreds = *chunk.get(2).unwrap_or(&&b'0') - b'0';
-            let tens = *chunk.get(1).unwrap_or(&&b'0') - b'0';
-            let ones = *chunk.get(0).unwrap_or(&&b'0') - b'0';
+            let mut digits = chunk.iter().rev();
+            let ones = digits.next().unwrap_or(&b'0') - b'0';
+            let tens = digits.next().unwrap_or(&b'0') - b'0';
+            let hundreds = digits.next().unwrap_or(&b'0') - b'0';
             if hundreds != 0 {
                 write!(
                     &mut buf,
